@@ -1,0 +1,4 @@
+# Secured XML Parser
+defusedxml
+# Signing SAML Assertions
+cryptography
