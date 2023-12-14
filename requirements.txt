@@ -2,3 +2,7 @@
 defusedxml
 # Signing SAML Assertions
 cryptography
+# Web Application
+flask
+# HTTP Requests
+requests

@@ -1,6 +1,7 @@
 import base64
 import datetime
 import logging
+import typing
 import urllib.parse
 import uuid
 import xml.etree.ElementTree as EET
@@ -14,28 +15,33 @@ import defusedxml.ElementTree as ET
 import requests
 
 
-def _bool(string: str) -> bool:
+def _bool(string: str | None) -> bool | None:
     if string == "true":
         return True
     if string == "false":
         return False
-    return None
 
 
-def find_child_by_name(parent, child_name: str, _all: bool = False):
-    children = list(
+def find_children_by_name(parent: EET.Element, children_name: str) -> list[EET.Element]:
+    return list(
         filter(
-            lambda e: e.tag.endswith(child_name),
+            lambda e: e.tag.endswith(children_name),
             parent.findall("./"),
         )
     )
-    if _all:
-        return children
+
+
+def find_child_by_name(parent: EET.Element, child_name: str) -> EET.Element | None:
+    children = find_children_by_name(parent, children_name=child_name)
     return children[0] if len(children) == 1 else None
 
 
 class SAMLRequestNameIDPolicy:
-    def __init__(self, allow_create: bool = None, fmt: str = None) -> None:
+    def __init__(
+        self,
+        allow_create: typing.Optional[bool] = None,
+        fmt: typing.Optional[str] = None,
+    ) -> None:
         self._allow_create = allow_create
         self._fmt = fmt
 
@@ -54,10 +60,10 @@ class SAMLRequestNameIDPolicy:
 class SAMLSPSSOAttributeConsumingServiceRequestedAttribute:
     def __init__(
         self,
-        friendly_name: str = None,
-        name: str = None,
-        name_format: str = None,
-        is_required: bool = None,
+        friendly_name: typing.Optional[str] = None,
+        name: typing.Optional[str] = None,
+        name_format: typing.Optional[str] = None,
+        is_required: typing.Optional[bool] = None,
     ):
         self._friendly_name = friendly_name
         self._name = name
@@ -65,19 +71,19 @@ class SAMLSPSSOAttributeConsumingServiceRequestedAttribute:
         self._is_required = is_required
 
     @property
-    def friendly_name(self) -> str:
+    def friendly_name(self) -> str | None:
         return self._friendly_name
 
     @property
-    def name(self) -> str:
+    def name(self) -> str | None:
         return self._name
 
     @property
-    def name_format(self) -> str:
+    def name_format(self) -> str | None:
         return self._name_format
 
     @property
-    def is_required(self) -> bool:
+    def is_required(self) -> bool | None:
         return self._is_required
 
     def __dict__(self):
@@ -89,147 +95,61 @@ class SAMLSPSSOAttributeConsumingServiceRequestedAttribute:
         }
 
 
-class SAMLACSFields:
-    def __init__(self, issuer: str) -> None:
-        logging.captureWarnings(True)
-        self._saml_acs_fields = ET.fromstring(
-            EET.canonicalize(requests.get(issuer, verify=False).text)
-        )
-        logging.captureWarnings(False)
-
-        self._sp_sso_descriptor = find_child_by_name(
-            self._saml_acs_fields, "SPSSODescriptor"
-        )
-        self._sp_sso_descriptor_name_id_format = find_child_by_name(
-            self._sp_sso_descriptor, "NameIDFormat"
-        )
-        self._sp_sso_descriptor_assertion_consumer_service = find_child_by_name(
-            self._sp_sso_descriptor, "AssertionConsumerService"
-        )
-        self._sp_sso_descriptor_attribute_consuming_service = find_child_by_name(
-            self._sp_sso_descriptor, "AttributeConsumingService"
-        )
+class SAMLACSFieldsSPSSODescriptorAssertionConsumerService:
+    def __init__(self, assertion_consumer_service: EET.Element):
+        self._assertion_consumer_service = assertion_consumer_service
 
     @property
-    def id(self) -> str:
-        return self._saml_acs_fields.attrib.get("ID")
+    def binding(self) -> str | None:
+        return self._assertion_consumer_service.attrib.get("Binding")
 
     @property
-    def entity_id(self) -> str:
-        return self._saml_acs_fields.attrib.get("entityID")
+    def location(self) -> str | None:
+        return self._assertion_consumer_service.attrib.get("Location")
 
     @property
-    def sp_sso_descriptor_authn_requests_signed(self) -> bool | None:
-        if None is self._sp_sso_descriptor:
+    def index(self) -> int | None:
+        monad = self._assertion_consumer_service.attrib.get("index")
+        if monad is None:
             return None
-        authn_requests_signed = self._sp_sso_descriptor.attrib.get(
-            "AuthnRequestsSigned"
-        )
-        return _bool(authn_requests_signed)
-
-    @property
-    def sp_sso_descriptor_want_assertions_signed(self) -> bool | None:
-        if None is self._sp_sso_descriptor:
+        if not monad.isdecimal():
             return None
-        want_assertions_signed = self._sp_sso_descriptor.attrib.get(
-            "WantAssertionsSigned"
-        )
-        return _bool(want_assertions_signed)
+        return int(monad)
 
     @property
-    def sp_sso_descriptor_protocol_support_enumeration(self) -> str:
-        return (
-            self._sp_sso_descriptor.attrib.get("protocolSupportEnumeration")
-            if None is not self._sp_sso_descriptor
-            else ""
-        )
+    def is_default(self) -> bool | None:
+        return _bool(self._assertion_consumer_service.attrib.get("isDefault"))
+
+
+class SAMLACSFieldsSPSSODescriptorAttributeConsumingService:
+    def __init__(self, attribute_consuming_service: EET.Element):
+        self._attribute_consuming_service = attribute_consuming_service
 
     @property
-    def sp_sso_descriptor_name_id_format(self) -> str:
-        return (
-            self._sp_sso_descriptor_name_id_format.text
-            if None is not self._sp_sso_descriptor_name_id_format
-            else ""
-        )
-
-    @property
-    def sp_sso_descriptor_assertion_consumer_service_binding(self) -> str:
-        return (
-            self._sp_sso_descriptor_assertion_consumer_service.attrib.get("Binding")
-            if None is not self._sp_sso_descriptor_assertion_consumer_service
-            else ""
-        )
-
-    @property
-    def sp_sso_descriptor_assertion_consumer_service_location(self) -> str:
-        return (
-            self._sp_sso_descriptor_assertion_consumer_service.attrib.get("Location")
-            if None is not self._sp_sso_descriptor_assertion_consumer_service
-            else ""
-        )
-
-    @property
-    def sp_sso_descriptor_assertion_consumer_service_index(self) -> int | None:
-        try:
-            return (
-                int(
-                    self._sp_sso_descriptor_assertion_consumer_service.attrib.get(
-                        "index"
-                    )
-                )
-                if None is not self._sp_sso_descriptor_assertion_consumer_service
-                else None
-            )
-        except ValueError:
+    def index(self) -> int | None:
+        monad = self._attribute_consuming_service.attrib.get("index")
+        if monad is None:
             return None
+        if not monad.isdecimal():
+            return None
+        return int(monad)
 
     @property
-    def sp_sso_descriptor_assertion_consumer_service_is_default(self) -> bool | None:
-        if None is self._sp_sso_descriptor_assertion_consumer_service:
-            return None
-        is_default = self._sp_sso_descriptor_assertion_consumer_service.attrib.get(
-            "isDefault"
-        )
-        return _bool(is_default)
+    def is_default(self) -> bool | None:
+        return _bool(self._attribute_consuming_service.attrib.get("isDefault"))
 
     @property
-    def sp_sso_descriptor_attribute_consuming_service_index(self) -> int | None:
-        try:
-            return (
-                int(
-                    self._sp_sso_descriptor_attribute_consuming_service.attrib.get(
-                        "index"
-                    )
-                )
-                if None is not self._sp_sso_descriptor_attribute_consuming_service
-                else None
-            )
-        except ValueError:
-            return None
-
-    @property
-    def sp_sso_descriptor_attribute_consuming_service_is_default(self) -> bool | None:
-        if None is self._sp_sso_descriptor_attribute_consuming_service:
-            return None
-        is_default = self._sp_sso_descriptor_attribute_consuming_service.attrib.get(
-            "isDefault"
-        )
-        return _bool(is_default)
-
-    @property
-    def sp_sso_descriptor_attribute_consuming_service_service_name(self) -> str:
-        if None is self._sp_sso_descriptor_attribute_consuming_service:
-            return None
+    def service_name(self) -> str | None:
         service_name = find_child_by_name(
-            self._sp_sso_descriptor_attribute_consuming_service, "ServiceName"
+            self._attribute_consuming_service, "ServiceName"
         )
-        return service_name.text if None is not service_name else ""
+        return service_name.text if service_name is not None else None
 
     @property
-    def sp_sso_descriptor_attribute_consuming_service_requested_attributes(
+    def requested_attributes(
         self,
     ) -> list[SAMLSPSSOAttributeConsumingServiceRequestedAttribute]:
-        if None is self._sp_sso_descriptor_attribute_consuming_service:
+        if None is self._attribute_consuming_service:
             return []
         return [
             SAMLSPSSOAttributeConsumingServiceRequestedAttribute(
@@ -238,12 +158,107 @@ class SAMLACSFields:
                 name_format=requested_attribute.attrib.get("NameFormat"),
                 is_required=_bool(requested_attribute.attrib.get("isRequired")),
             )
-            for requested_attribute in find_child_by_name(
-                self._sp_sso_descriptor_attribute_consuming_service,
+            for requested_attribute in find_children_by_name(
+                self._attribute_consuming_service,
                 "RequestedAttribute",
-                _all=True,
             )
         ]
+
+class SAMLACSFieldsSPSSODescriptor:
+    def __init__(self, sp_sso_descriptor: EET.Element | None):
+        if sp_sso_descriptor is None:
+            raise ValueError("SP SSO Descriptor was not found on metadata.")
+        self._sp_sso_descriptor = sp_sso_descriptor
+
+        name_id_format = find_child_by_name(self._sp_sso_descriptor, "NameIDFormat")
+        if name_id_format is None:
+            raise ValueError("Can't find NameID inside SP SSO Descriptor.")
+        self._name_id_format = name_id_format
+
+        assertion_consumer_service = find_child_by_name(
+            self._sp_sso_descriptor, "AssertionConsumerService"
+        )
+        if assertion_consumer_service is None:
+            raise ValueError(
+                "Can't find Assertion Consumer Service inside SP SSO Descriptor."
+            )
+        self._assertion_consumer_service = (
+            SAMLACSFieldsSPSSODescriptorAssertionConsumerService(
+                assertion_consumer_service
+            )
+        )
+
+        attribute_consuming_service = find_child_by_name(
+            self._sp_sso_descriptor, "AttributeConsumingService"
+        )
+        if attribute_consuming_service is None:
+            raise ValueError(
+                "Can't find Attribute Consuming Service inside SP SSO Descriptor."
+            )
+        self._attribute_consuming_service = (
+            SAMLACSFieldsSPSSODescriptorAttributeConsumingService(
+                attribute_consuming_service
+            )
+        )
+
+    @property
+    def authn_requests_signed(self) -> bool | None:
+        if None is self._sp_sso_descriptor:
+            return None
+        authn_requests_signed = self._sp_sso_descriptor.attrib.get(
+            "AuthnRequestsSigned"
+        )
+        return _bool(authn_requests_signed)
+
+    @property
+    def want_assertions_signed(self) -> bool | None:
+        if None is self._sp_sso_descriptor:
+            return None
+        want_assertions_signed = self._sp_sso_descriptor.attrib.get(
+            "WantAssertionsSigned"
+        )
+        return _bool(want_assertions_signed)
+
+    @property
+    def protocol_support_enumeration(self) -> str | None:
+        return self._sp_sso_descriptor.attrib.get("protocolSupportEnumeration")
+
+    @property
+    def name_id_format(self) -> str | None:
+        return self._name_id_format.text
+
+    @property
+    def assertion_consumer_service(
+        self,
+    ) -> SAMLACSFieldsSPSSODescriptorAssertionConsumerService:
+        return self._assertion_consumer_service
+
+    @property
+    def attribute_consuming_service(
+        self,
+    ) -> SAMLACSFieldsSPSSODescriptorAttributeConsumingService:
+        return self._attribute_consuming_service
+
+
+class SAMLACSFields:
+    def __init__(self, issuer: str) -> None:
+        logging.captureWarnings(True)
+        metafields = requests.get(issuer, verify=False).text
+        logging.captureWarnings(False)
+
+        self._saml_acs_fields = EET.fromstring(EET.canonicalize(metafields))
+
+        self._sp_sso_descriptor = find_child_by_name(
+            self._saml_acs_fields, "SPSSODescriptor"
+        )
+
+    @property
+    def id(self) -> str | None:
+        return self._saml_acs_fields.attrib.get("ID")
+
+    @property
+    def entity_id(self) -> str | None:
+        return self._saml_acs_fields.attrib.get("entityID")
 
     def __dict__(self):
         return {
@@ -282,7 +297,7 @@ class SAMLRequest:
         # SAML Request doesn't have a 'header'. -15 padding to skip the verification.
         saml_request = zlib.decompress(saml_request, -15).decode("unicode-escape")
         saml_request = EET.canonicalize(saml_request)
-        self._saml_request = ET.fromstring(saml_request)
+        self._saml_request = EET.fromstring(saml_request)
 
     @property
     def assertion_consumer_service_url(self) -> str:
@@ -546,9 +561,7 @@ class SAMLResponse:
         signed_info_element = EET.SubElement(
             signature_element,
             "ds:SignedInfo",
-            attrib={
-                "xmlns:ds": "http://www.w3.org/2000/09/xmldsig#"
-            }
+            attrib={"xmlns:ds": "http://www.w3.org/2000/09/xmldsig#"},
         )
         canonicalization_method = EET.SubElement(
             signed_info_element,
@@ -595,7 +608,7 @@ class SAMLResponse:
         sha256_hash = cryptography.hazmat.primitives.hashes.Hash(
             cryptography.hazmat.primitives.hashes.SHA256()
         )
-        assertion_str = ET.tostring(self._assertion).decode("unicode-escape")
+        assertion_str = EET.tostring(self._assertion).decode("unicode-escape")
         canonicalized_assertion = EET.canonicalize(assertion_str)
 
         sha256_hash.update(canonicalized_assertion.encode())
@@ -628,5 +641,5 @@ class SAMLResponse:
         return self
 
     def render(self) -> str:
-        xml_string = ET.tostring(self._saml_response, encoding="unicode")
+        xml_string = EET.tostring(self._saml_response, encoding="unicode")
         return xml_string
