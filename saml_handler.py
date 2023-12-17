@@ -1,7 +1,8 @@
 import base64
 import datetime
-import logging
+import ssl
 import typing
+import urllib.request
 import urllib.parse
 import uuid
 import xml.etree.ElementTree as EET
@@ -10,9 +11,6 @@ import zlib
 import cryptography.hazmat.primitives.hashes
 import cryptography.hazmat.primitives.asymmetric.padding
 import cryptography.hazmat.primitives.serialization
-
-import defusedxml.ElementTree as ET
-import requests
 
 
 def _bool(string: str | None) -> bool | None:
@@ -274,9 +272,9 @@ class SAMLACSFieldsSPSSODescriptor:
 
 class SAMLACSFields:
     def __init__(self, issuer: str) -> None:
-        logging.captureWarnings(True)
-        metafields = requests.get(issuer, verify=False).text
-        logging.captureWarnings(False)
+        ssl_context = ssl._create_unverified_context()
+        with urllib.request.urlopen(url=issuer, context=ssl_context) as response:
+            metafields = response.read()
 
         self._saml_acs_fields = EET.fromstring(EET.canonicalize(metafields))
 
@@ -307,9 +305,13 @@ class SAMLACSFields:
 class SAMLRequest:
     def __init__(self, saml_request: str):
         saml_request = urllib.parse.unquote(saml_request)
-        b64_decoded_saml_request = base64.b64decode(saml_request.encode("unicode-escape"))
+        b64_decoded_saml_request = base64.b64decode(
+            saml_request.encode("unicode-escape")
+        )
         # SAML Request doesn't have a 'header'. -15 padding to skip the verification.
-        inflated_saml_request = zlib.decompress(b64_decoded_saml_request, -15).decode("unicode-escape")
+        inflated_saml_request = zlib.decompress(b64_decoded_saml_request, -15).decode(
+            "unicode-escape"
+        )
         saml_request = EET.canonicalize(inflated_saml_request)
         self._saml_request = EET.fromstring(saml_request)
 
@@ -372,7 +374,9 @@ class SAMLRequest:
             "issue_instant": self.issue_instant,
             "version": self.version,
             "issuer": self.issuer,
-            "name_id_policy": name_id_policy.__dict__() if name_id_policy is not None else None
+            "name_id_policy": name_id_policy.__dict__()
+            if name_id_policy is not None
+            else None,
         }
 
 
@@ -399,7 +403,7 @@ class SAMLResponse:
         # Creating the SAML Response XML structure
         self._saml_response = EET.Element(
             "samlp:Response",
-            attrib={ # type: ignore
+            attrib={  # type: ignore
                 "xmlns:samlp": "urn:oasis:names:tc:SAML:2.0:protocol",
                 "xmlns:saml": "urn:oasis:names:tc:SAML:2.0:assertion",
                 "ID": f"_{uuid.uuid4()}",
@@ -453,9 +457,9 @@ class SAMLResponse:
         subject_name_id_element = EET.SubElement(
             subject_element,
             "saml:NameID",
-            attrib={ # type: ignore
+            attrib={  # type: ignore
                 "SPNameQualifier": self._saml_request.issuer,
-                "Format": self._saml_request.name_id_policy.format, # type: ignore
+                "Format": self._saml_request.name_id_policy.format,  # type: ignore
             },
         )
         subject_name_id_element.text = name_id
@@ -467,7 +471,7 @@ class SAMLResponse:
         subject_confirmation_data_element = EET.SubElement(
             subject_confirmation_element,
             "saml:SubjectConfirmationData",
-            attrib={ # type: ignore
+            attrib={  # type: ignore
                 "NotBefore": date_to_str(
                     datetime.datetime.fromtimestamp(
                         datetime.datetime.utcnow().timestamp() - 10
@@ -567,7 +571,7 @@ class SAMLResponse:
         )
         attribute_value_element.text = str(value)
 
-    def sign(self, private_key, public_key):
+    def sign(self, private_key_path: str, public_key_path: str):
         signature_element = EET.Element(
             "ds:Signature",
             attrib={"xmlns:ds": "http://www.w3.org/2000/09/xmldsig#"},
@@ -612,13 +616,16 @@ class SAMLResponse:
             attrib={"Algorithm": "http://www.w3.org/2001/04/xmlenc#sha256"},
         )
 
-        with open(private_key, "rb") as key_file:
+        with open(private_key_path, "rb") as key_file:
             private_key_data = key_file.read()
-        with open(public_key, "rb") as key_file:
+        with open(public_key_path, "rb") as key_file:
             public_key_data = key_file.read()
         private_key = cryptography.hazmat.primitives.serialization.load_pem_private_key(
             private_key_data, password=None
         )
+        public_key_data = public_key_data[
+            len("-----BEGIN CERTIFICATE-----") : -len("-----END CERTIFICATE-----") - 1
+        ].decode()
 
         sha256_hash = cryptography.hazmat.primitives.hashes.Hash(
             cryptography.hazmat.primitives.hashes.SHA256()
@@ -636,10 +643,10 @@ class SAMLResponse:
         signed_info_str = EET.tostring(signed_info_element)
         signed_info_str = EET.canonicalize(signed_info_str)
 
-        signature = private_key.sign( # type: ignore
+        signature = private_key.sign(  # type: ignore
             signed_info_str.encode(),
-            cryptography.hazmat.primitives.asymmetric.padding.PKCS1v15(), # type: ignore
-            cryptography.hazmat.primitives.hashes.SHA256(), # type: ignore
+            cryptography.hazmat.primitives.asymmetric.padding.PKCS1v15(),  # type: ignore
+            cryptography.hazmat.primitives.hashes.SHA256(),  # type: ignore
         )
         signature_b64 = base64.b64encode(signature).decode().replace("\n", "")
         signature_value = EET.SubElement(signature_element, "ds:SignatureValue")
@@ -648,9 +655,7 @@ class SAMLResponse:
         signed_info_element = EET.SubElement(signature_element, "ds:KeyInfo")
         x509_data = EET.SubElement(signed_info_element, "ds:X509Data")
         x509_certificate = EET.SubElement(x509_data, "ds:X509Certificate")
-        x509_certificate.text = public_key_data[
-            len("-----BEGIN CERTIFICATE-----") : -len("-----END CERTIFICATE-----") - 1
-        ].decode()
+        x509_certificate.text = public_key_data
 
         self._assertion.insert(1, signature_element)
         return self
