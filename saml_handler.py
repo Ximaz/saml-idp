@@ -120,6 +120,14 @@ class SAMLACSFieldsSPSSODescriptorAssertionConsumerService:
     def is_default(self) -> bool | None:
         return _bool(self._assertion_consumer_service.attrib.get("isDefault"))
 
+    def __dict__(self):
+        return {
+            "binding": self.binding,
+            "location": self.location,
+            "index": self.index,
+            "is_default": self.is_default,
+        }
+
 
 class SAMLACSFieldsSPSSODescriptorAttributeConsumingService:
     def __init__(self, attribute_consuming_service: EET.Element):
@@ -163,6 +171,20 @@ class SAMLACSFieldsSPSSODescriptorAttributeConsumingService:
                 "RequestedAttribute",
             )
         ]
+
+    def __dict__(self):
+        return {
+            "index": self.index,
+            "is_default": self.is_default,
+            "service_name": self.service_name,
+            "requested_attributes": list(
+                map(
+                    lambda ra: ra.__dict__(),
+                    self.requested_attributes,
+                )
+            ),
+        }
+
 
 class SAMLACSFieldsSPSSODescriptor:
     def __init__(self, sp_sso_descriptor: EET.Element | None):
@@ -239,6 +261,16 @@ class SAMLACSFieldsSPSSODescriptor:
     ) -> SAMLACSFieldsSPSSODescriptorAttributeConsumingService:
         return self._attribute_consuming_service
 
+    def __dict__(self):
+        return {
+            "authn_requests_signed": self.authn_requests_signed,
+            "want_assertions_signed": self.want_assertions_signed,
+            "protocol_support_enumeration": self.protocol_support_enumeration,
+            "name_id_format": self.name_id_format,
+            "assertion_consumer_service": self.assertion_consumer_service.__dict__(),
+            "attribute_consuming_service": self.attribute_consuming_service.__dict__(),
+        }
+
 
 class SAMLACSFields:
     def __init__(self, issuer: str) -> None:
@@ -248,8 +280,8 @@ class SAMLACSFields:
 
         self._saml_acs_fields = EET.fromstring(EET.canonicalize(metafields))
 
-        self._sp_sso_descriptor = find_child_by_name(
-            self._saml_acs_fields, "SPSSODescriptor"
+        self._sp_sso_descriptor = SAMLACSFieldsSPSSODescriptor(
+            find_child_by_name(self._saml_acs_fields, "SPSSODescriptor")
         )
 
     @property
@@ -260,64 +292,48 @@ class SAMLACSFields:
     def entity_id(self) -> str | None:
         return self._saml_acs_fields.attrib.get("entityID")
 
+    @property
+    def sp_sso_descriptor(self):
+        return self._sp_sso_descriptor
+
     def __dict__(self):
         return {
             "id": self.id,
             "entity_id": self.entity_id,
-            "sp_sso_descriptor": {
-                "authn_requests_signed": self.sp_sso_descriptor_authn_requests_signed,
-                "want_assertions_signed": self.sp_sso_descriptor_want_assertions_signed,
-                "protocol_support_enumeration": self.sp_sso_descriptor_protocol_support_enumeration,
-                "name_id_format": self.sp_sso_descriptor_name_id_format,
-                "assertion_consumer_service": {
-                    "binding": self.sp_sso_descriptor_assertion_consumer_service_binding,
-                    "location": self.sp_sso_descriptor_assertion_consumer_service_location,
-                    "index": self.sp_sso_descriptor_assertion_consumer_service_index,
-                    "is_default": self.sp_sso_descriptor_assertion_consumer_service_is_default,
-                },
-                "attribute_consuming_service": {
-                    "index": self.sp_sso_descriptor_attribute_consuming_service_index,
-                    "is_default": self.sp_sso_descriptor_attribute_consuming_service_is_default,
-                    "service_name": self.sp_sso_descriptor_attribute_consuming_service_service_name,
-                    "requested_attributes": list(
-                        map(
-                            lambda ra: ra.__dict__(),
-                            self.sp_sso_descriptor_attribute_consuming_service_requested_attributes,
-                        )
-                    ),
-                },
-            },
+            "sp_sso_descriptor": self.sp_sso_descriptor.__dict__(),
         }
 
 
 class SAMLRequest:
     def __init__(self, saml_request: str):
         saml_request = urllib.parse.unquote(saml_request)
-        saml_request = base64.b64decode(saml_request.encode("unicode-escape"))
+        b64_decoded_saml_request = base64.b64decode(saml_request.encode("unicode-escape"))
         # SAML Request doesn't have a 'header'. -15 padding to skip the verification.
-        saml_request = zlib.decompress(saml_request, -15).decode("unicode-escape")
-        saml_request = EET.canonicalize(saml_request)
+        inflated_saml_request = zlib.decompress(b64_decoded_saml_request, -15).decode("unicode-escape")
+        saml_request = EET.canonicalize(inflated_saml_request)
         self._saml_request = EET.fromstring(saml_request)
 
     @property
-    def assertion_consumer_service_url(self) -> str:
+    def assertion_consumer_service_url(self) -> str | None:
         return self._saml_request.attrib.get("AssertionConsumerServiceURL")
 
     @property
     def assertion_consumer_service_fields(self) -> SAMLACSFields:
+        if self.issuer is None:
+            raise ValueError("Issuer can't be None.")
         saml_acs_fields = SAMLACSFields(self.issuer)
         if self.issuer != saml_acs_fields.entity_id:
             raise ValueError("Issuer isn't the Assertion Consumer Service.")
         return saml_acs_fields
 
     @property
-    def destination(self) -> str:
+    def destination(self) -> str | None:
         return self._saml_request.attrib.get("Destination")
 
     @property
     def issue_instant(self) -> datetime.datetime | None:
         date_str = self._saml_request.attrib.get("IssueInstant")
-        if None is date_str:
+        if date_str is None:
             return None
         try:
             return datetime.datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%SZ")
@@ -325,22 +341,22 @@ class SAMLRequest:
             return None
 
     @property
-    def version(self) -> str:
+    def version(self) -> str | None:
         return self._saml_request.attrib.get("Version")
 
     @property
-    def id(self) -> str:
+    def id(self) -> str | None:
         return self._saml_request.attrib.get("ID")
 
     @property
-    def issuer(self) -> str:
+    def issuer(self) -> str | None:
         issuer = find_child_by_name(self._saml_request, "Issuer")
-        return issuer.text if None is not issuer else ""
+        return issuer.text if issuer is not None else None
 
     @property
     def name_id_policy(self) -> SAMLRequestNameIDPolicy | None:
         name_id_policy = find_child_by_name(self._saml_request, "NameIDPolicy")
-        if None is name_id_policy:
+        if name_id_policy is None:
             return None
         allow_create = name_id_policy.attrib.get("AllowCreate")
         allow_create = _bool(allow_create)
@@ -356,9 +372,7 @@ class SAMLRequest:
             "issue_instant": self.issue_instant,
             "version": self.version,
             "issuer": self.issuer,
-            "name_id_policy": None
-            if None is name_id_policy
-            else name_id_policy.__dict__(),
+            "name_id_policy": name_id_policy.__dict__() if name_id_policy is not None else None
         }
 
 
@@ -367,9 +381,9 @@ class SAMLResponse:
         self._saml_request = saml_request
         self._saml_acs_fields = self._saml_request.assertion_consumer_service_fields
         self._fields = (
-            self._saml_acs_fields.sp_sso_descriptor_attribute_consuming_service_requested_attributes
+            self._saml_acs_fields.sp_sso_descriptor.attribute_consuming_service.requested_attributes
         )
-        delta = 60 * 60
+
         date_to_str = lambda d: d.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         assertion_customer_service_url = (
@@ -377,6 +391,7 @@ class SAMLResponse:
         )
         destination = self._saml_request.destination
         request_id = self._saml_request.id
+
         idp_host = urllib.parse.urlparse(destination)
         issue_instant = self._saml_request.issue_instant
         issuer = self._saml_request.issuer
@@ -384,7 +399,7 @@ class SAMLResponse:
         # Creating the SAML Response XML structure
         self._saml_response = EET.Element(
             "samlp:Response",
-            attrib={
+            attrib={ # type: ignore
                 "xmlns:samlp": "urn:oasis:names:tc:SAML:2.0:protocol",
                 "xmlns:saml": "urn:oasis:names:tc:SAML:2.0:assertion",
                 "ID": f"_{uuid.uuid4()}",
@@ -438,9 +453,9 @@ class SAMLResponse:
         subject_name_id_element = EET.SubElement(
             subject_element,
             "saml:NameID",
-            attrib={
+            attrib={ # type: ignore
                 "SPNameQualifier": self._saml_request.issuer,
-                "Format": self._saml_request.name_id_policy.format,
+                "Format": self._saml_request.name_id_policy.format, # type: ignore
             },
         )
         subject_name_id_element.text = name_id
@@ -452,7 +467,7 @@ class SAMLResponse:
         subject_confirmation_data_element = EET.SubElement(
             subject_confirmation_element,
             "saml:SubjectConfirmationData",
-            attrib={
+            attrib={ # type: ignore
                 "NotBefore": date_to_str(
                     datetime.datetime.fromtimestamp(
                         datetime.datetime.utcnow().timestamp() - 10
@@ -620,11 +635,11 @@ class SAMLResponse:
 
         signed_info_str = EET.tostring(signed_info_element)
         signed_info_str = EET.canonicalize(signed_info_str)
-        print(signed_info_str)
-        signature = private_key.sign(
+
+        signature = private_key.sign( # type: ignore
             signed_info_str.encode(),
-            cryptography.hazmat.primitives.asymmetric.padding.PKCS1v15(),
-            cryptography.hazmat.primitives.hashes.SHA256(),
+            cryptography.hazmat.primitives.asymmetric.padding.PKCS1v15(), # type: ignore
+            cryptography.hazmat.primitives.hashes.SHA256(), # type: ignore
         )
         signature_b64 = base64.b64encode(signature).decode().replace("\n", "")
         signature_value = EET.SubElement(signature_element, "ds:SignatureValue")

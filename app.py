@@ -38,9 +38,9 @@ def login_post():
             {"status": "error", "message": "'SAMLRequest' is bad formated."}
         )
     user = database.get_user(
-        database_path="database\\users.json", username=username, password=password
+        database_path="database/users.json", username=username, password=password
     )
-    if None is user:
+    if user is None:
         return flask.jsonify(
             {"status": "error", "message": "invalid credentials provided"}
         )
@@ -49,7 +49,7 @@ def login_post():
     SAMLResponse.set_field("firstname", user["firstname"])
     SAMLResponse.set_field("lastname", user["lastname"])
     SAMLResponse.set_field("uid", user["username"])
-    signed_assertion = SAMLResponse.sign("certs\\localhost.key", "certs\\localhost.crt")
+    signed_assertion = SAMLResponse.sign("certs/private.key", "certs/public.crt")
     saml_assertion = base64.b64encode(signed_assertion.render().encode()).decode()
     return flask.render_template(
         "saml_response.html",
@@ -63,7 +63,7 @@ if __name__ == "__main__":
         port=443,
         debug=True,
         ssl_context=(
-            "certs\\localhost.crt",
-            "certs\\localhost.key",
+            "certs/public.crt",
+            "certs/private.key",
         ),
     )
